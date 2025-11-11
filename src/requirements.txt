@@ -1,0 +1,14 @@
+# --- Core scraping ---
+pyppeteer==1.0.2
+pyppeteer-stealth==2.7.4
+aiofiles==24.1.0
+user-agents==2.2.0
+
+# --- Optional but useful tools ---
+requests==2.32.3       # For quick API calls or testing URLs
+beautifulsoup4==4.12.3 # For parsing HTML (if you add text extraction later)
+lxml==5.3.0            # Faster HTML/XML parsing for BeautifulSoup
+
+# --- Utility / Development ---
+tqdm==4.66.5           # Nice progress bars for loops or async jobs
+colorama==0.4.6        # Colored terminal output (Windows safe)
