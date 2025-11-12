@@ -1,39 +1,31 @@
-# LLM Training Requirements
-# Install with: pip install -r requirements_llm.txt
-
-# Core training framework
-transformers>=4.36.0
-peft>=0.7.0
-datasets>=2.16.0
-accelerate>=0.25.0
-bitsandbytes>=0.41.0
-
-# PyTorch (choose based on your system)
-torch>=2.1.0
-# For CUDA 11.8: torch>=2.1.0+cu118
-# For CUDA 12.1: torch>=2.1.0+cu121
-# For CPU only: torch>=2.1.0+cpu
+# Core training stack (versions tested together)
+transformers==4.41.2
+peft==0.11.1
+datasets==2.19.0
+accelerate==0.32.1
+bitsandbytes==0.43.1          # GPU quantization (QLoRA). On Windows, works on recent builds.
 
 # Data processing
-sentencepiece>=0.1.99
-protobuf>=3.20.0
+sentencepiece==0.2.0
+protobuf==4.25.3
 
 # Evaluation
-rouge-score>=0.1.2
-sacrebleu>=2.3.1
+rouge-score==0.1.2
+sacrebleu==2.4.2
 
 # Utilities
-tqdm>=4.66.0
-tensorboard>=2.15.0
-wandb>=0.16.0  # Optional: for experiment tracking
+tqdm==4.66.4
+tensorboard==2.17.0
+# wandb==0.17.0               # Optional: uncomment if you’ll use W&B
 
-# Text processing (from main requirements)
-beautifulsoup4>=4.12.0
-lxml>=5.0.0
+# Text processing (from your main requirements)
+beautifulsoup4==4.12.3
+lxml==5.2.1
 
-# Machine learning for data filtering
-scikit-learn>=1.3.0
+# ML for data filtering
+scikit-learn==1.5.1
 
 # Optional but recommended
-einops>=0.7.0
-safetensors>=0.4.0
+einops==0.8.0
+safetensors==0.4.3
+# xformers==0.0.28.post1      # Optional but recommended on 2080S; see install note below

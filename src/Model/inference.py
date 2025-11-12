@@ -62,20 +62,16 @@ class ECUTuningLLM:
         print("[OK]    Model loaded successfully")
 
     def generate(
-        self,
-        instruction: str,
-        context: str = "",
-        max_new_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
-        top_k: Optional[int] = None,
+    self,
+    instruction: str,
+    context: str = "",
+    max_new_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    top_k: Optional[int] = None,
     ) -> str:
-        """Generate response to an instruction"""
-
-        # Format prompt
         prompt = self._format_prompt(instruction, context)
 
-        # Tokenize
         inputs = self.tokenizer(
             prompt,
             return_tensors="pt",
@@ -83,26 +79,23 @@ class ECUTuningLLM:
             max_length=self.config.max_seq_length,
         ).to(self.device)
 
-        # Generate
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens or self.config.max_new_tokens,
-                temperature=temperature or self.config.temperature,
-                top_p=top_p or self.config.top_p,
-                top_k=top_k or self.config.top_k,
-                repetition_penalty=self.config.repetition_penalty,
+                temperature=temperature if temperature is not None else 0.3,
+                top_p=top_p if top_p is not None else 0.9,
+                top_k=top_k if top_k is not None else 50,
                 do_sample=True,
+                repetition_penalty=max(self.config.repetition_penalty, 1.15),
+                no_repeat_ngram_size=6,                      # <-- anti-parrot
+                eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
 
-        # Decode
-        full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        full = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return self._extract_response(full)
 
-        # Extract only the response part (after "### Response:")
-        response = self._extract_response(full_response)
-
-        return response
 
     def _format_prompt(self, instruction: str, context: str = "") -> str:
         """Format instruction and context into model prompt"""
