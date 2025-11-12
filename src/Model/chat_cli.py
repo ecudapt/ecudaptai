@@ -11,7 +11,11 @@ MODEL_NAME = "all-MiniLM-L6-v2"
 TOP_K = 5
 
 # Load your LLM provider key (OpenAI or Mistral endpoint)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    print("❌ Error: OPENAI_API_KEY environment variable not set")
+    print("   Please set it in your .env file or export it")
+    sys.exit(1)
 
 # ────────────────────────────────────────────────────────────────
 # INITIALIZE COMPONENTS

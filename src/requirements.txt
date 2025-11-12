@@ -1,8 +1,15 @@
 # --- Core scraping ---
+scrapy>=2.11.0
+scrapy-playwright>=0.0.34
+playwright>=1.40.0
 pyppeteer==1.0.2
 pyppeteer-stealth==2.7.4
 aiofiles==24.1.0
 user-agents==2.2.0
+
+# --- Database ---
+supabase>=2.3.0
+python-dotenv>=1.0.0
 
 # --- Optional but useful tools ---
 requests==2.32.3       # For quick API calls or testing URLs
