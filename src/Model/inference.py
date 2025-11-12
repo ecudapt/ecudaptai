@@ -12,8 +12,8 @@ try:
     from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
     from peft import PeftModel
 except ImportError as e:
-    print(f"❌ Missing package: {e}")
-    print("Install with: pip install transformers peft torch")
+    print(f"[ERROR] Missing package: {e}")
+    print("        Install with: pip install transformers peft torch")
     sys.exit(1)
 
 from llm_config import LLMConfig
@@ -30,26 +30,26 @@ class ECUTuningLLM:
         self.tokenizer = None
         self.pipeline = None
 
-        print(f"🖥️  Device: {self.device}")
+        print(f"[INFO] Device: {self.device}")
 
     def load_model(self):
         """Load the fine-tuned model"""
-        print(f"\n📦 Loading model from {self.model_path}")
+        print(f"\n[LOAD] Loading model from {self.model_path}")
 
         if not self.model_path.exists():
-            print(f"❌ Model not found at {self.model_path}")
-            print("   Train the model first with: python train_llm.py")
+            print(f"[ERROR] Model not found at {self.model_path}")
+            print("        Train the model first with: python train_llm.py")
             sys.exit(1)
 
         # Load tokenizer
-        print("   Loading tokenizer...")
+        print("        Loading tokenizer...")
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_path,
             trust_remote_code=True,
         )
 
         # Load model
-        print("   Loading model...")
+        print("        Loading model...")
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_path,
             torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
@@ -59,7 +59,7 @@ class ECUTuningLLM:
 
         self.model.eval()
 
-        print("✅ Model loaded successfully")
+        print("[OK]    Model loaded successfully")
 
     def generate(
         self,
@@ -130,34 +130,34 @@ class ECUTuningLLM:
 
     def chat(self):
         """Interactive chat loop"""
-        print("\n🚗 ECUdapt AI - Your ECU Tuning Assistant")
-        print("   (Fine-tuned on real forum discussions)")
-        print("   Type 'exit' or 'quit' to end session")
-        print("─" * 50)
+        print("\nECUdapt AI - Your ECU Tuning Assistant")
+        print("Fine-tuned on real forum discussions")
+        print("Type 'exit' or 'quit' to end session")
+        print("-" * 50)
 
         conversation_history = []
 
         while True:
             try:
                 # Get user input
-                user_input = input("\n❓ You: ").strip()
+                user_input = input("\nYou: ").strip()
 
                 if not user_input:
                     continue
 
                 if user_input.lower() in ["exit", "quit", "bye"]:
-                    print("\n👋 Thanks for using ECUdapt AI!")
+                    print("\nGoodbye! Thanks for using ECUdapt AI.")
                     break
 
                 # Build context from conversation history
                 context = self._build_context(conversation_history)
 
                 # Generate response
-                print("\n💭 Thinking...", end="", flush=True)
+                print("\n[INFO] Thinking...", end="", flush=True)
                 response = self.generate(user_input, context)
-                print("\r" + " " * 20 + "\r", end="")  # Clear "Thinking..."
+                print("\r" + " " * 40 + "\r", end="")  # Clear "Thinking..."
 
-                print(f"🤖 ECUdapt AI: {response}")
+                print(f"ECUdapt AI: {response}")
 
                 # Update conversation history
                 conversation_history.append({
@@ -169,10 +169,10 @@ class ECUTuningLLM:
                 conversation_history = conversation_history[-3:]
 
             except KeyboardInterrupt:
-                print("\n\n👋 Goodbye!")
+                print("\n\nInterrupted. Goodbye!")
                 break
             except Exception as e:
-                print(f"\n⚠️  Error: {e}")
+                print(f"\n[ERROR] {e}")
 
     def _build_context(self, history: List[Dict]) -> str:
         """Build context from conversation history"""
@@ -231,14 +231,14 @@ def main():
     # Run inference
     if args.question:
         # Single question mode
-        print(f"\n❓ Question: {args.question}")
+        print(f"\nQuestion: {args.question}")
         if args.context:
-            print(f"📋 Context: {args.context}")
+            print(f"Context: {args.context}")
 
-        print("\n💭 Generating answer...")
+        print("\n[INFO] Generating answer...")
         response = llm.generate(args.question, args.context)
 
-        print(f"\n🤖 Answer:\n{response}\n")
+        print(f"\nAnswer:\n{response}\n")
     else:
         # Interactive chat mode
         llm.chat()

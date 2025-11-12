@@ -11,6 +11,10 @@ import time
 
 from llm_config import LLMConfig, LightweightConfig
 
+# Base dirs (independent of where you run Python from)
+MODEL_DIR = Path(__file__).resolve().parent          # .../src/Model
+SRC_DIR   = MODEL_DIR.parent                         # .../src
+SCRAPER_RAW_DIR = SRC_DIR / "Scraper" / "data" / "raw"
 
 class LLMPipeline:
     """Orchestrates the complete LLM training pipeline"""
@@ -29,28 +33,28 @@ class LLMPipeline:
         """Run a pipeline step with error handling"""
         start_time = time.time()
         try:
-            print(f"▶️  Starting: {name}")
+            print(f"[START] {name}")
             result = func(*args, **kwargs)
             duration = time.time() - start_time
-            print(f"✅ Completed: {name} (took {duration:.1f}s)")
+            print(f"[OK]    {name} (took {duration:.1f}s)")
             self.steps_completed.append(name)
             return result
         except Exception as e:
             duration = time.time() - start_time
-            print(f"❌ Failed: {name} (after {duration:.1f}s)")
-            print(f"   Error: {e}")
+            print(f"[FAIL]  {name} (after {duration:.1f}s)")
+            print(f"        Error: {e}")
             raise
 
     def check_prerequisites(self):
         """Check if required files and packages exist"""
-        print("🔍 Checking prerequisites...")
+        print("[CHECK] Checking prerequisites...")
 
         # Check for scraped data
-        scraper_data = Path("../Scraper/ecudapt/data/raw")
+        scraper_data = SCRAPER_RAW_DIR
         if not scraper_data.exists() or not list(scraper_data.glob("*.jsonl")):
-            print("⚠️  No scraped data found!")
+            print("[WARN] No scraped data found!")
             print(f"   Expected location: {scraper_data.resolve()}")
-            print("   Run the scraper first: cd ../Scraper && ./run_scraper.sh urls.txt")
+            print("   Run the scraper first: cd src/Scraper && python <your run script>")
             return False
 
         # Check Python packages
@@ -71,22 +75,22 @@ class LLMPipeline:
                 missing.append(package)
 
         if missing:
-            print(f"❌ Missing required packages: {', '.join(missing)}")
+            print(f"[FAIL] Missing required packages: {', '.join(missing)}")
             print("\nInstall with:")
             print(f"   pip install {' '.join(missing)}")
             return False
 
-        print("✅ All prerequisites satisfied")
+        print("[OK] All prerequisites satisfied")
         return True
 
     def step1_clean_data(self):
         """Step 1: Clean and filter scraped forum data"""
         from data_cleaner import process_raw_threads
 
-        raw_dir = Path("../Scraper/ecudapt/data/raw")
-        output_file = self.config.raw_data_path
+        raw_dir = SCRAPER_RAW_DIR
+        output_file = self.config.raw_data_path  # data/clean/forum_posts_clean.jsonl
 
-        process_raw_threads(raw_dir, output_file, use_ml=True)
+        process_raw_threads(raw_dir, output_file, use_ml=False)
 
     def step2_prepare_training_data(self):
         """Step 2: Convert forum posts to instruction-response pairs"""
@@ -123,13 +127,13 @@ class LLMPipeline:
 
     def run_full_pipeline(self):
         """Execute complete pipeline from start to finish"""
-        print("\n🚀 ECUdapt AI - Full LLM Training Pipeline")
+        print("\n[PIPELINE] ECUdapt AI - Full LLM Training Pipeline")
         print(f"   Base model: {self.config.base_model}")
         print(f"   Output directory: {self.config.output_dir}")
 
         # Check prerequisites
         if not self.check_prerequisites():
-            print("\n❌ Prerequisites not met. Exiting.")
+            print("\n[ABORT] Prerequisites not met. Exiting.")
             sys.exit(1)
 
         total_steps = 5
@@ -163,31 +167,31 @@ class LLMPipeline:
 
             # Success!
             print("\n" + "=" * 70)
-            print("🎉 PIPELINE COMPLETED SUCCESSFULLY!")
+            print("[DONE] PIPELINE COMPLETED SUCCESSFULLY!")
             print("=" * 70)
-            print(f"\n✅ Steps completed: {len(self.steps_completed)}/{total_steps}")
+            print(f"\n[SUMMARY] Steps completed: {len(self.steps_completed)}/{total_steps}")
             for i, step in enumerate(self.steps_completed, 1):
                 print(f"   {i}. {step}")
 
-            print(f"\n📦 Your trained model is ready at:")
+            print(f"\n[MODEL] Trained model is at:")
             print(f"   {self.config.output_dir.resolve()}")
 
-            print(f"\n🚀 To use your model:")
+            print(f"\n[USAGE] To use your model:")
             print(f"   python inference.py --model-path {self.config.output_dir}")
 
-            print(f"\n💬 To start interactive chat:")
-            print(f"   python inference.py")
+            print(f"\n[USAGE] To start interactive chat:")
+            print("   python inference.py")
 
         except Exception as e:
             print("\n" + "=" * 70)
-            print("❌ PIPELINE FAILED")
+            print("[ERROR] PIPELINE FAILED")
             print("=" * 70)
             print(f"\nCompleted {len(self.steps_completed)}/{total_steps} steps:")
             for i, step in enumerate(self.steps_completed, 1):
-                print(f"   ✅ {i}. {step}")
+                print(f"   [OK] {i}. {step}")
 
-            print(f"\n❌ Failed at: Step {current_step}")
-            print(f"   Error: {e}")
+            print(f"\n[ERROR] Failed at: Step {current_step}")
+            print(f"        Error: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
@@ -221,7 +225,7 @@ def main():
 
     # Select configuration
     if args.lightweight:
-        print("📦 Using lightweight configuration")
+        print("[CONFIG] Using lightweight configuration")
         config = LightweightConfig()
     else:
         config = LLMConfig()
@@ -243,7 +247,7 @@ def main():
         }
 
         func, name = step_map[args.step]
-        print(f"\n🔧 Running single step: {name}\n")
+        print(f"\n[STEP] Running single step: {name}\n")
         pipeline.run_step(name, func)
     else:
         # Run full pipeline

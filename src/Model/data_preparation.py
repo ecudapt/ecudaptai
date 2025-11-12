@@ -10,6 +10,7 @@ from typing import List, Dict, Tuple
 from tqdm import tqdm
 from llm_config import LLMConfig
 
+
 class DataPreparator:
     def __init__(self, config: LLMConfig):
         self.config = config
@@ -100,7 +101,7 @@ class DataPreparator:
         # Sliding window approach
         words = text.split()
         for i in range(0, len(words), 50):
-            section = " ".join(words[i:i+window])
+            section = " ".join(words[i:i + window])
             section_lower = section.lower()
             matches = sum(1 for kw in keywords if kw in section_lower)
             if matches > max_matches:
@@ -152,15 +153,15 @@ class DataPreparator:
 
     def prepare_training_data(self):
         """Main pipeline: Load forum data, create instruction pairs, split train/val"""
-        print("🚀 Starting data preparation for LLM training...")
+        print("[DATA] Starting data preparation for LLM training...")
 
         if not self.config.raw_data_path.exists():
-            print(f"❌ Raw data not found: {self.config.raw_data_path}")
-            print("   Run data_cleaner.py first to create clean forum data")
+            print(f"[ERROR] Raw data not found: {self.config.raw_data_path}")
+            print("        Run data_cleaner.py first to create clean forum data")
             return
 
         # Load clean forum data
-        print(f"📂 Loading clean forum data from {self.config.raw_data_path}")
+        print(f"[INFO] Loading clean forum data from {self.config.raw_data_path}")
         forum_posts = []
         with open(self.config.raw_data_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -169,46 +170,50 @@ class DataPreparator:
                 except json.JSONDecodeError:
                     continue
 
-        print(f"✅ Loaded {len(forum_posts)} forum posts")
+        print(f"[INFO] Loaded {len(forum_posts)} forum posts")
 
         # Create instruction-response pairs
-        print("\n🧠 Creating instruction-response pairs...")
+        print("\n[INFO] Creating instruction-response pairs...")
         all_pairs = []
         for post in tqdm(forum_posts, desc="Processing posts"):
             pairs = self.create_instruction_pairs(post)
             all_pairs.extend(pairs)
 
-        print(f"✅ Created {len(all_pairs)} training pairs from {len(forum_posts)} posts")
+        print(f"[INFO] Created {len(all_pairs)} training pairs from {len(forum_posts)} posts")
 
         # Remove duplicates
-        print("\n🔍 Removing duplicate instructions...")
+        print("\n[INFO] Removing duplicate instructions...")
         unique_pairs = self._deduplicate(all_pairs)
-        print(f"✅ Kept {len(unique_pairs)} unique pairs")
+        print(f"[INFO] Kept {len(unique_pairs)} unique pairs")
 
         # Train/validation split
-        print(f"\n📊 Splitting data (train: {self.config.train_test_split*100:.0f}%, val: {(1-self.config.train_test_split)*100:.0f}%)")
+        print(
+            f"\n[INFO] Splitting data (train: {self.config.train_test_split * 100:.0f}%, "
+            f"val: {(1 - self.config.train_test_split) * 100:.0f}%)"
+        )
         random.shuffle(unique_pairs)
         split_idx = int(len(unique_pairs) * self.config.train_test_split)
         train_pairs = unique_pairs[:split_idx]
         val_pairs = unique_pairs[split_idx:]
 
         # Save training data
-        print(f"\n💾 Saving training data...")
+        print("\n[INFO] Saving training data...")
         self._save_jsonl(train_pairs, self.config.train_data_path)
         self._save_jsonl(val_pairs, self.config.val_data_path)
 
-        print(f"\n✅ Data preparation complete!")
-        print(f"   Training samples: {len(train_pairs)}")
-        print(f"   Validation samples: {len(val_pairs)}")
-        print(f"   Train file: {self.config.train_data_path}")
-        print(f"   Validation file: {self.config.val_data_path}")
+        print("\n[DONE] Data preparation complete!")
+        print(f"       Training samples:   {len(train_pairs)}")
+        print(f"       Validation samples: {len(val_pairs)}")
+        print(f"       Train file:         {self.config.train_data_path}")
+        print(f"       Validation file:    {self.config.val_data_path}")
 
         # Show sample
-        print(f"\n📋 Sample training pair:")
-        sample = train_pairs[0]
-        print(f"   Instruction: {sample['instruction'][:100]}...")
-        print(f"   Context: {sample['context']}")
-        print(f"   Response: {sample['response'][:150]}...")
+        if train_pairs:
+            print("\n[SAMPLE] Training pair:")
+            sample = train_pairs[0]
+            print(f"   Instruction: {sample['instruction'][:100]}...")
+            print(f"   Context:     {sample['context']}")
+            print(f"   Response:    {sample['response'][:150]}...")
 
     def _deduplicate(self, pairs: List[Dict]) -> List[Dict]:
         """Remove duplicate instruction pairs"""

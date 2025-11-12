@@ -8,7 +8,7 @@ from transformers import pipeline
 # CONFIGURATION
 # ----------------------------------------------------------------------
 
-RAW_DIR = Path("data/raw/")
+RAW_DIR = Path("../Scraper/data/raw")
 OUTPUT_FILE = Path("data/clean/forum_posts_clean.jsonl")
 
 # Use fast keyword-based filter first, ML for uncertain cases
@@ -33,7 +33,7 @@ EXCLUDE_KEYWORDS = [
 # ----------------------------------------------------------------------
 classifier = None
 if USE_ML:
-    print("⚙️  Loading zero-shot relevance classifier (facebook/bart-large-mnli)...")
+    print("[INFO] Loading zero-shot relevance classifier (facebook/bart-large-mnli)...")
     classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
 # ----------------------------------------------------------------------
@@ -66,7 +66,7 @@ def ml_relevance(text: str, threshold=ML_THRESHOLD) -> bool:
         label, score = result["labels"][0], result["scores"][0]
         return label.lower().startswith("ecu") and score >= threshold
     except Exception as e:
-        print(f"⚠️ ML relevance check failed: {e}")
+        print(f"[WARN] ML relevance check failed: {e}")
         return keyword_relevant(text)
 
 
@@ -82,16 +82,16 @@ def process_raw_threads(input_dir: Path, output_file: Path, use_ml=True):
 
     files = sorted(input_dir.glob("*.jsonl"))
     if not files:
-        print(f"❌ No .jsonl files found in {input_dir.resolve()}")
+        print(f"[ERROR] No .jsonl files found in {input_dir.resolve()}")
         return
 
-    print(f"📂 Found {len(files)} raw forum files under {input_dir}")
+    print(f"[INFO] Found {len(files)} raw forum files under {input_dir}")
     with open(output_file, "w", encoding="utf-8") as fout:
         for file in files:
             forum_name = file.stem.replace("_", ".")
             lines = list(open(file, "r", encoding="utf-8"))
-            print(f"\n🧹 Cleaning forum: {forum_name} ({len(lines)} threads)")
-            for line in tqdm(lines, desc=f"→ {forum_name}", ncols=90):
+            print(f"\n[CLEAN] Cleaning forum: {forum_name} ({len(lines)} threads)")
+            for line in tqdm(lines, desc=f"Processing {forum_name}", ncols=90):
                 total_raw += 1
                 try:
                     obj = json.loads(line)
@@ -122,18 +122,22 @@ def process_raw_threads(input_dir: Path, output_file: Path, use_ml=True):
                         total_kept += 1
 
                 except Exception as e:
-                    print(f"⚠️ Error parsing line in {file.name}: {e}")
+                    print(f"[WARN] Error parsing line in {file.name}: {e}")
                     traceback.print_exc()
 
     # --- Summary ---
     duration = time.time() - start_time
-    print("\n──────────────────────────────")
-    print(f"🧩 Total threads read: {total_raw}")
-    print(f"🧼 Valid after cleaning: {total_clean}")
-    print(f"✅ ECU-related threads kept: {total_kept}")
-    print(f"💾 Output file: {output_file.resolve()}")
-    print(f"⏱️ Duration: {duration:.1f}s ({total_kept/duration:.1f} items/sec)")
-    print("──────────────────────────────")
+    print("\n" + "-" * 30)
+    print(f"[STATS] Total threads read:     {total_raw}")
+    print(f"[STATS] Valid after cleaning:   {total_clean}")
+    print(f"[STATS] ECU-related threads kept: {total_kept}")
+    print(f"[STATS] Output file:            {output_file.resolve()}")
+    if duration > 0:
+        rate = total_kept / duration
+    else:
+        rate = 0.0
+    print(f"[STATS] Duration: {duration:.1f}s ({rate:.1f} items/sec)")
+    print("-" * 30)
 
 
 # ----------------------------------------------------------------------

@@ -3,7 +3,7 @@ from sentence_transformers import SentenceTransformer
 
 class ForumRetriever:
     def __init__(self, index_path="data/vector/forum.faiss", meta_path="data/vector/forum.meta.npy"):
-        print("⚙️  Loading vector index and metadata...")
+        print("Loading vector index and metadata...")
         self.model = SentenceTransformer("all-MiniLM-L6-v2")
         self.index = faiss.read_index(index_path)
         self.meta = np.load(meta_path, allow_pickle=True)

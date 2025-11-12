@@ -3,18 +3,19 @@ from pathlib import Path
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 
+
 def build_index(input_path: Path, index_path: Path):
-    print("⚙️  Initializing sentence embedding model (all-MiniLM-L6-v2)...")
+    print("[EMBED] Initializing sentence embedding model (all-MiniLM-L6-v2)...")
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
     if not input_path.exists():
-        print(f"❌ Input file not found: {input_path}")
+        print(f"[ERROR] Input file not found: {input_path}")
         return
 
-    print(f"📂 Reading cleaned forum data from {input_path}")
+    print(f"[INFO] Reading cleaned forum data from {input_path}")
     texts, metas = [], []
     with open(input_path, "r", encoding="utf-8") as f:
-        for line in tqdm(f, desc="📜 Loading JSONL", ncols=100):
+        for line in tqdm(f, desc="Loading JSONL", ncols=100):
             try:
                 obj = json.loads(line)
                 text = obj.get("text", "").strip()
@@ -23,14 +24,14 @@ def build_index(input_path: Path, index_path: Path):
                 texts.append(text)
                 metas.append(obj.get("url", ""))
             except Exception as e:
-                print(f"⚠️ Skipping malformed line: {e}")
+                print(f"[WARN] Skipping malformed line: {e}")
 
-    print(f"🧠 Total valid documents to embed: {len(texts)}")
+    print(f"[INFO] Total valid documents to embed: {len(texts)}")
     if not texts:
-        print("❌ No valid documents to process — aborting.")
+        print("[ERROR] No valid documents to process — aborting.")
         return
 
-    print("\n🚀 Generating embeddings...")
+    print("\n[EMBED] Generating embeddings...")
     start_time = time.time()
     embeddings = model.encode(
         texts,
@@ -40,11 +41,11 @@ def build_index(input_path: Path, index_path: Path):
         batch_size=32,
     )
     duration = time.time() - start_time
-    print(f"✅ Generated embeddings for {len(texts)} docs in {duration:.1f}s")
+    print(f"[OK] Generated embeddings for {len(texts)} docs in {duration:.1f}s")
 
     # --- Build FAISS index ---
     dim = embeddings.shape[1]
-    print(f"\n🧩 Building FAISS index (dim={dim})...")
+    print(f"\n[INDEX] Building FAISS index (dim={dim})...")
     index = faiss.IndexFlatL2(dim)
     index.add(embeddings)
 
@@ -53,9 +54,10 @@ def build_index(input_path: Path, index_path: Path):
     faiss.write_index(index, str(index_path))
     np.save(index_path.with_suffix(".meta.npy"), np.array(metas))
     size = os.path.getsize(index_path) / 1e6
-    print(f"💾 Saved FAISS index → {index_path} ({size:.1f} MB)")
-    print(f"💾 Saved metadata → {index_path.with_suffix('.meta.npy')}")
-    print(f"[✓] Indexed {len(texts)} total documents ✅")
+    print(f"[SAVE] Saved FAISS index -> {index_path} ({size:.1f} MB)")
+    print(f"[SAVE] Saved metadata -> {index_path.with_suffix('.meta.npy')}")
+    print(f"[DONE] Indexed {len(texts)} total documents")
+
 
 if __name__ == "__main__":
     build_index(

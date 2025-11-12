@@ -6,7 +6,7 @@ Test model performance on held-out validation set
 import json
 import time
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 import sys
 
@@ -14,8 +14,9 @@ try:
     from rouge_score import rouge_scorer
     from tqdm import tqdm
 except ImportError:
-    print("⚠️  Optional packages missing. Install with:")
-    print("   pip install rouge-score tqdm")
+    print("[WARN] Optional packages missing. Install with:")
+    print("       pip install rouge-score tqdm")
+    sys.exit(1)
 
 from inference import ECUTuningLLM
 from llm_config import LLMConfig
@@ -41,11 +42,14 @@ class ModelEvaluator:
         self.model_path = model_path
         self.config = config
         self.llm = None
-        self.scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+        self.scorer = rouge_scorer.RougeScorer(
+            ['rouge1', 'rouge2', 'rougeL'],
+            use_stemmer=True
+        )
 
     def load_model(self):
         """Load the model for evaluation"""
-        print("📦 Loading model for evaluation...")
+        print("[LOAD] Loading model for evaluation...")
         self.llm = ECUTuningLLM(self.model_path, self.config)
         self.llm.load_model()
 
@@ -54,10 +58,10 @@ class ModelEvaluator:
         val_path = self.config.val_data_path
 
         if not val_path.exists():
-            print(f"❌ Validation data not found: {val_path}")
+            print(f"[ERROR] Validation data not found: {val_path}")
             sys.exit(1)
 
-        print(f"📚 Loading validation data from {val_path}")
+        print(f"[INFO] Loading validation data from {val_path}")
         data = []
         with open(val_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -66,7 +70,7 @@ class ModelEvaluator:
                 except json.JSONDecodeError:
                     continue
 
-        print(f"✅ Loaded {len(data)} validation samples")
+        print(f"[INFO] Loaded {len(data)} validation samples")
         return data
 
     def evaluate_sample(self, sample: Dict) -> Dict:
@@ -102,14 +106,14 @@ class ModelEvaluator:
 
     def evaluate(self, max_samples: int = 100) -> EvaluationResult:
         """Run full evaluation on validation set"""
-        print("\n🔬 Starting model evaluation...\n")
+        print("\n[EVAL] Starting model evaluation...\n")
 
         # Load validation data
         val_data = self.load_validation_data()
 
         # Limit samples if requested
         if max_samples and max_samples < len(val_data):
-            print(f"   Evaluating on {max_samples} samples (from {len(val_data)} total)")
+            print(f"[INFO] Evaluating on {max_samples} samples (from {len(val_data)} total)")
             val_data = val_data[:max_samples]
 
         # Evaluate each sample
@@ -135,10 +139,10 @@ class ModelEvaluator:
                 failed += 1
 
         # Calculate averages
-        avg_rouge1 = sum(rouge1_scores) / len(rouge1_scores) if rouge1_scores else 0
-        avg_rouge2 = sum(rouge2_scores) / len(rouge2_scores) if rouge2_scores else 0
-        avg_rougeL = sum(rougeL_scores) / len(rougeL_scores) if rougeL_scores else 0
-        avg_latency = sum(latencies) / len(latencies) if latencies else 0
+        avg_rouge1 = sum(rouge1_scores) / len(rouge1_scores) if rouge1_scores else 0.0
+        avg_rouge2 = sum(rouge2_scores) / len(rouge2_scores) if rouge2_scores else 0.0
+        avg_rougeL = sum(rougeL_scores) / len(rougeL_scores) if rougeL_scores else 0.0
+        avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
 
         return EvaluationResult(
             avg_rouge1=avg_rouge1,
@@ -154,27 +158,31 @@ class ModelEvaluator:
     def print_results(self, result: EvaluationResult):
         """Print evaluation results in a nice format"""
         print("\n" + "=" * 60)
-        print("📊 EVALUATION RESULTS")
+        print("EVALUATION RESULTS")
         print("=" * 60)
 
-        print(f"\n📈 Performance Metrics:")
+        print("\nPerformance Metrics:")
         print(f"   ROUGE-1:  {result.avg_rouge1:.4f}")
         print(f"   ROUGE-2:  {result.avg_rouge2:.4f}")
         print(f"   ROUGE-L:  {result.avg_rougeL:.4f}")
 
-        print(f"\n⚡ Speed:")
+        print("\nSpeed:")
         print(f"   Avg latency: {result.avg_latency:.2f}s per question")
 
-        print(f"\n✅ Success Rate:")
-        print(f"   Successful: {result.successful}/{result.total_questions} ({result.successful/result.total_questions*100:.1f}%)")
+        print("\nSuccess Rate:")
+        if result.total_questions > 0:
+            success_rate = result.successful / result.total_questions * 100.0
+        else:
+            success_rate = 0.0
+        print(f"   Successful: {result.successful}/{result.total_questions} ({success_rate:.1f}%)")
         if result.failed > 0:
             print(f"   Failed: {result.failed}")
 
-        print(f"\n📋 Sample Outputs:")
+        print("\nSample Outputs:")
         print("-" * 60)
 
         for i, sample in enumerate(result.samples[:3], 1):
-            print(f"\n{i}. Question: {sample['instruction'][:100]}...")
+            print(f"\n{i}. Question:  {sample['instruction'][:100]}...")
             print(f"   Reference: {sample['reference'][:150]}...")
             print(f"   Generated: {sample['generated'][:150]}...")
             print(f"   ROUGE-L: {sample['rougeL']:.3f} | Latency: {sample['latency']:.2f}s")
@@ -196,7 +204,10 @@ class ModelEvaluator:
                 "total": result.total_questions,
                 "successful": result.successful,
                 "failed": result.failed,
-                "success_rate": result.successful / result.total_questions,
+                "success_rate": (
+                    result.successful / result.total_questions
+                    if result.total_questions > 0 else 0.0
+                ),
             },
             "samples": result.samples,
         }
@@ -204,7 +215,7 @@ class ModelEvaluator:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(results_dict, f, indent=2, ensure_ascii=False)
 
-        print(f"\n💾 Results saved to {output_path}")
+        print(f"\n[SAVE] Results saved to {output_path}")
 
     def run_evaluation(self, max_samples: int = 100, save_path: Optional[Path] = None):
         """Run complete evaluation pipeline"""
@@ -221,7 +232,6 @@ class ModelEvaluator:
 def main():
     """CLI for evaluation"""
     import argparse
-    from typing import Optional
 
     parser = argparse.ArgumentParser(description="Evaluate ECUdapt LLM")
     parser.add_argument(
