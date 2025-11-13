@@ -1,183 +1,118 @@
+# src/Model/train_llm.py
 #!/usr/bin/env python3
 """
-LLM Training Script with LoRA/QLoRA
-Fine-tune a base model on ECU tuning forum data
-(Updated: trains ONLY on the Response via label masking)
+Supervised fine-tuning with DECISION outputs (no quoting) + label masking.
+Saves/evaluates every 200 steps; optimized for A100/L40S (bf16 + TF32).
 """
-import os, sys, json, torch
+import sys, torch
 from pathlib import Path
-from typing import Optional
-from dataclasses import dataclass
-from time import time
 from math import ceil
+from time import time
 from tqdm import tqdm
 
 try:
     from transformers import (
-        AutoModelForCausalLM,
-        AutoTokenizer,
-        TrainingArguments,
-        Trainer,
-        DataCollatorForLanguageModeling,
-        BitsAndBytesConfig,
-        TrainerCallback,
-        TrainerState,
-        TrainerControl,
+        AutoModelForCausalLM, AutoTokenizer,
+        TrainingArguments, Trainer, DataCollatorForLanguageModeling,
+        BitsAndBytesConfig, TrainerCallback, TrainerState, TrainerControl
     )
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     from datasets import load_dataset
-    import bitsandbytes as bnb
 except ImportError as e:
-    print(f"[ERROR] Missing required package: {e}")
-    print("        Install with: pip install transformers peft datasets bitsandbytes accelerate")
+    print(f"[ERROR] {e}\nInstall: pip install transformers peft datasets bitsandbytes accelerate")
     sys.exit(1)
 
 from llm_config import LLMConfig, LightweightConfig
 
-# --------------------------- Progress Callback ---------------------------
 
-class _Throughput:
-    def __init__(self):
-        self.last_time = None
-        self.last_step = 0
-        self.tok_per_sec = 0.0
+# ---------------- progress callback ----------------
+class _TP:
+    def __init__(self): self.t=time(); self.s=0; self.r=0.0
 
 class ProgressCallback(TrainerCallback):
-    """
-    ASCII-only live progress for Windows consoles.
-    Shows step/epoch, loss, lr, tokens/sec, ETA; also logs to a file.
-    """
-    def __init__(self, total_steps: int, tokens_per_step: int, log_path: Path):
-        self.total_steps = int(total_steps)
-        self.tokens_per_step = int(tokens_per_step)
-        self.tp = _Throughput()
-        self.pbar = None
-        self.log_path = log_path
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, total_steps:int, tokens_per_step:int, log_path:Path):
+        self.total_steps=total_steps; self.tps=tokens_per_step
+        self.tp=_TP(); self.pbar=None
+        self.log_path=log_path; log_path.parent.mkdir(parents=True, exist_ok=True)
+    def _log(self,line): open(self.log_path,"a",encoding="utf-8").write(line.rstrip()+"\n")
+    def on_train_begin(self, args, state, control, **kw):
+        self.pbar=tqdm(total=self.total_steps,desc="TRAIN",leave=True,ncols=100)
+        self.tp.t=time(); self._log("[START] Training")
+    def on_log(self, args, state, control, **kw):
+        if not state.log_history: return
+        rec=state.log_history[-1]; step=state.global_step; now=time()
+        dt=max(1e-9,now-self.tp.t); ds=max(0,step-self.tp.s)
+        if ds>0: self.tp.r=(ds*self.tps)/dt; self.tp.t=now; self.tp.s=step
+        loss=rec.get("loss",rec.get("train_loss")); lr=rec.get("learning_rate")
+        remain=max(0,self.total_steps-step); eta=remain*self.tps/max(1e-9,self.tp.r)
+        m=int(eta//60); s=int(eta%60)
+        self.pbar.n=min(step,self.total_steps)
+        status=f"step={step}/{self.total_steps}"
+        if loss is not None: status+=f"  loss={loss:.4f}"
+        if lr   is not None: status+=f"  lr={lr:.2e}"
+        status+=f"  tok/s={self.tp.r:,.0f}  ETA={m:02d}:{s:02d}"
+        self.pbar.set_postfix_str(status[:60]); self.pbar.refresh(); self._log(f"[LOG] {status}")
+    def on_save(self, args, state, control, **kw): self._log(f"[SAVE] checkpoint {state.global_step}")
+    def on_train_end(self, args, state, control, **kw):
+        self.pbar.n=min(self.total_steps,state.global_step); self.pbar.close(); self._log("[DONE] Training finished")
 
-    def _log(self, line: str):
-        with open(self.log_path, "a", encoding="utf-8") as f:
-            f.write(line.rstrip() + "\n")
 
-    def on_train_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-        self.pbar = tqdm(total=self.total_steps, desc="TRAIN", leave=True, ncols=100)
-        self.tp.last_time = time()
-        self._log("[START] Training")
-
-    def on_log(self, args, state, control, **kwargs):
-        if not state.log_history:
-            return
-        rec = state.log_history[-1]
-        step = state.global_step
-
-        now = time()
-        dt = max(1e-9, now - self.tp.last_time)
-        dstep = max(0, step - self.tp.last_step)
-        if dstep > 0:
-            self.tp.tok_per_sec = (dstep * self.tokens_per_step) / dt
-            self.tp.last_time = now
-            self.tp.last_step = step
-
-        loss = rec.get("loss", rec.get("train_loss"))
-        lr = rec.get("learning_rate")
-
-        remaining = max(0, self.total_steps - step)
-        tps = max(1e-9, self.tp.tok_per_sec)
-        eta_s = remaining * self.tokens_per_step / tps
-        eta_min = int(eta_s // 60); eta_sec = int(eta_s % 60)
-
-        self.pbar.n = min(step, self.total_steps)
-        status = f"step={step}/{self.total_steps}"
-        if loss is not None: status += f"  loss={loss:.4f}"
-        if lr is not None:   status += f"  lr={lr:.2e}"
-        status += f"  tok/s={self.tp.tok_per_sec:,.0f}  ETA={eta_min:02d}:{eta_sec:02d}"
-        self.pbar.set_postfix_str(status[:60])
-        self.pbar.refresh()
-        self._log(f"[LOG] {status}")
-
-    def on_epoch_end(self, args, state, control, **kwargs):
-        ep = state.epoch if state.epoch is not None else 0
-        self._log(f"[EPOCH] {ep:.2f} finished")
-
-    def on_save(self, args, state, control, **kwargs):
-        self._log(f"[SAVE] checkpoint at step {state.global_step}")
-
-    def on_train_end(self, args, state, control, **kwargs):
-        self.pbar.n = min(self.total_steps, state.global_step)
-        self.pbar.close()
-        self._log("[DONE] Training finished")
-
-# --------------------------- Trainer Wrapper -----------------------------
-
+# ---------------- trainer ----------------
 class ECUTuningTrainer:
-    def __init__(self, config: LLMConfig):
-        self.config = config
-        self.tokenizer = None
-        self.model = None
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        print(f"[INFO] Using device: {self.device}")
-        if self.device == "cuda":
+    def __init__(self, cfg: LLMConfig):
+        self.cfg=cfg
+        self.device="cuda" if torch.cuda.is_available() else "cpu"
+        print(f"[INFO] Device: {self.device}")
+        if self.device=="cuda":
             print(f"[INFO] GPU: {torch.cuda.get_device_name(0)}")
-            print(f"[INFO] Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+            print(f"[INFO] Mem: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
+        self.tok=None; self.model=None
 
     def load_model_and_tokenizer(self):
-        print(f"\n[LOAD] Base model: {self.config.base_model}")
-        bnb_config = None
-        if self.config.use_4bit:
-            print("[LOAD] Using 4-bit quantization (QLoRA)")
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
+        print(f"\n[LOAD] Base: {self.cfg.base_model}")
+        bnb=None
+        if self.cfg.use_4bit:
+            print("[LOAD] QLoRA 4-bit")
+            bnb=BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16 if self.device=="cuda" else torch.float32,
+                bnb_4bit_use_double_quant=True
             )
-        elif self.config.use_8bit:
-            print("[LOAD] Using 8-bit quantization")
-            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        elif self.cfg.use_8bit:
+            print("[LOAD] 8-bit"); bnb=BitsAndBytesConfig(load_in_8bit=True)
 
-        print("[LOAD] Tokenizer...")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.config.base_model,
-            trust_remote_code=True,
-            padding_side="right",
-        )
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        print("[LOAD] Tokenizer…")
+        self.tok = AutoTokenizer.from_pretrained(self.cfg.base_model, trust_remote_code=True, padding_side="right")
+        if self.tok.pad_token is None: self.tok.pad_token = self.tok.eos_token
 
-        print("[LOAD] Model weights...")
+        print("[LOAD] Weights…")
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.config.base_model,
-            quantization_config=bnb_config,
+            self.cfg.base_model,
+            quantization_config=bnb,
             device_map="auto",
             trust_remote_code=True,
-            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            torch_dtype=torch.bfloat16 if self.device=="cuda" else torch.float32
         )
-        if bnb_config is not None:
-            print("[LOAD] Preparing model for k-bit training...")
+        if bnb is not None:
+            print("[LOAD] Prepare k-bit training…")
             self.model = prepare_model_for_kbit_training(self.model)
-
-        print("[OK] Model and tokenizer loaded")
+        print("[OK] Model+Tokenizer loaded")
 
     def apply_lora(self):
-        if not self.config.use_lora:
-            return
-        print("\n[SETUP] Applying LoRA adapters...")
-        lora_config = LoraConfig(
-            r=self.config.lora_r,
-            lora_alpha=self.config.lora_alpha,
-            target_modules=self.config.lora_target_modules or ["q_proj", "v_proj", "k_proj", "o_proj"],
-            lora_dropout=self.config.lora_dropout,
-            bias="none",
-            task_type="CAUSAL_LM",
+        if not self.cfg.use_lora: return
+        print("\n[SETUP] LoRA…")
+        lora=LoraConfig(
+            r=self.cfg.lora_r, lora_alpha=self.cfg.lora_alpha, lora_dropout=self.cfg.lora_dropout,
+            target_modules=self.cfg.lora_target_modules or ["q_proj","k_proj","v_proj","o_proj"],
+            bias="none", task_type="CAUSAL_LM"
         )
-        self.model = get_peft_model(self.model, lora_config)
+        self.model = get_peft_model(self.model, lora)
         self.model.print_trainable_parameters()
-        print("[OK] LoRA adapters applied")
+        print("[OK] LoRA applied")
 
-    # ---------- NEW: label-masked dataset pipeline ----------
-    def _format_example(self, ex: dict) -> dict:
-        prompt = f"""{self.config.system_prompt}
+    # ----- DECISION template + label masking -----
+    def _format_example(self, ex:dict)->dict:
+        prompt = f"""{self.cfg.system_prompt}
 
 ### Instruction:
 {ex['instruction']}
@@ -187,180 +122,120 @@ class ECUTuningTrainer:
 
 ### Response:
 """
-        target = ex["response"].strip() + (self.tokenizer.eos_token or "</s>")
+        resp = ex.get("response","").strip()
+        decision = ex.get("decision") or "Apply conservative bounded deltas based on logs."
+        why      = ex.get("why") or "Observed behavior suggests conservative adjustment."
+        safety   = ex.get("safety") or "Respect octane timing caps, lambda floors at high load, and WGDC limits."
+        target = f"Decision: {decision}\nWhy: {why}\nSafety: {safety}\n"
+        if resp:
+            target += f"\nSummary: {resp[:600]}\n"
+        target += (self.tok.eos_token or "</s>")
         return {"prompt": prompt, "target": target}
 
-    def _tokenize_mask_supervised(self, examples):
-        prompts = examples["prompt"]
-        targets = examples["target"]
-
-        prompt_tok = self.tokenizer(
-            prompts,
-            truncation=True,
-            max_length=self.config.max_seq_length,
-            padding=False,
-            add_special_tokens=True,
-        )
-        with self.tokenizer.as_target_tokenizer():
-            target_tok = self.tokenizer(
-                targets,
-                truncation=True,
-                max_length=self.config.max_seq_length,
-                padding=False,
-                add_special_tokens=False,
-            )
-
-        input_ids, attn, labels = [], [], []
-        for pi, ti in zip(prompt_tok["input_ids"], target_tok["input_ids"]):
+    def _tokenize_mask_supervised(self, batch):
+        prompts=batch["prompt"]; targets=batch["target"]
+        p_tok = self.tok(prompts, truncation=True, max_length=self.cfg.max_seq_length, padding=False, add_special_tokens=True)
+        with self.tok.as_target_tokenizer():
+            t_tok = self.tok(targets, truncation=True, max_length=self.cfg.max_seq_length, padding=False, add_special_tokens=False)
+        input_ids=[]; attn=[]; labels=[]
+        for pi, ti in zip(p_tok["input_ids"], t_tok["input_ids"]):
             ids = pi + ti
-            am  = [1]*len(ids)
-            lb  = [-100]*len(pi) + ti  # <-- mask prompt tokens
-
-            # clip to max length
-            ids  = ids[:self.config.max_seq_length]
-            am   = am[:self.config.max_seq_length]
-            lb   = lb[:self.config.max_seq_length]
-
-            input_ids.append(ids)
-            attn.append(am)
-            labels.append(lb)
-
-        return {"input_ids": input_ids, "attention_mask": attn, "labels": labels}
+            am  = [1] * len(ids)
+            lb  = [-100]*len(pi) + ti      # mask prompt tokens => no loss on prompt
+            input_ids.append(ids[:self.cfg.max_seq_length])
+            attn.append(am[:self.cfg.max_seq_length])
+            labels.append(lb[:self.cfg.max_seq_length])
+        return {"input_ids":input_ids,"attention_mask":attn,"labels":labels}
 
     def load_training_data(self):
-        print(f"\n[DATA] Loading training data...")
-        if not self.config.train_data_path.exists():
-            print(f"[ERROR] Training data not found: {self.config.train_data_path}")
-            print("        Run data_preparation.py first")
-            sys.exit(1)
+        if not self.cfg.train_data_path.exists():
+            print(f"[ERROR] Missing train file: {self.cfg.train_data_path}"); sys.exit(1)
+        ds = load_dataset("json", data_files={"train":str(self.cfg.train_data_path),
+                                              "validation":str(self.cfg.val_data_path)})
+        print(f"[DATA] Train={len(ds['train'])}  Val={len(ds['validation'])}")
+        ds = ds.map(self._format_example)
+        ds = ds.map(self._tokenize_mask_supervised, batched=True, remove_columns=ds["train"].column_names)
+        return ds
 
-        dataset = load_dataset(
-            "json",
-            data_files={
-                "train": str(self.config.train_data_path),
-                "validation": str(self.config.val_data_path),
-            }
-        )
-        print(f"[DATA] Training samples:   {len(dataset['train'])}")
-        print(f"[DATA] Validation samples: {len(dataset['validation'])}")
-
-        print("[DATA] Formatting + tokenizing with label masking...")
-        dataset = dataset.map(self._format_example)
-        tokenized = dataset.map(
-            self._tokenize_mask_supervised,
-            batched=True,
-            remove_columns=dataset["train"].column_names,
-        )
-        print("[OK] Data loaded and tokenized")
-        return tokenized
-
-    def _estimate_steps_and_tokens(self, args: TrainingArguments, train_dataset_len: int) -> tuple[int, int]:
-        world_size = getattr(args, "world_size", 1)
-        micro_bs = args.per_device_train_batch_size
-        grad_acc = args.gradient_accumulation_steps
-        steps_per_epoch = ceil(train_dataset_len / (micro_bs * max(1, world_size)))
-        total_steps = steps_per_epoch * int(args.num_train_epochs)
-        if grad_acc > 1:
-            total_steps = ceil(total_steps / grad_acc)
-        avg_seq_len = self.config.max_seq_length
-        global_batch = micro_bs * max(1, world_size)
-        tokens_per_step = avg_seq_len * global_batch
-        return total_steps, tokens_per_step
+    def _estimate(self, args, n:int):
+        world=max(1,getattr(args,"world_size",1)); mbs=args.per_device_train_batch_size; ga=args.gradient_accumulation_steps
+        steps_per_epoch=ceil(n/(mbs*world)); total=steps_per_epoch*int(args.num_train_epochs)
+        if ga>1: total=ceil(total/ga)
+        tokens_per_step=self.cfg.max_seq_length*(mbs*world)
+        return total, tokens_per_step
 
     def train(self):
-        print("\n[TRAIN] Starting LLM training...")
-        training_args = TrainingArguments(
-            output_dir=str(self.config.output_dir),
-            num_train_epochs=self.config.num_epochs,
-            per_device_train_batch_size=self.config.batch_size,
-            per_device_eval_batch_size=self.config.batch_size,
-            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
-            learning_rate=self.config.learning_rate,
-            weight_decay=self.config.weight_decay,
-            warmup_steps=self.config.warmup_steps,
-            logging_dir=str(self.config.logs_dir),
+        print("\n[TRAIN] Starting…")
+        args = TrainingArguments(
+            output_dir=str(self.cfg.output_dir),
+            num_train_epochs=self.cfg.num_epochs,
+            per_device_train_batch_size=self.cfg.batch_size,
+            per_device_eval_batch_size=self.cfg.batch_size,
+            gradient_accumulation_steps=self.cfg.gradient_accumulation_steps,
+            learning_rate=self.cfg.learning_rate,
+            weight_decay=self.cfg.weight_decay,
+            lr_scheduler_type="cosine",
+            warmup_ratio=0.08,
+            max_grad_norm=1.0,
+
+            logging_dir=str(self.cfg.logs_dir),
             logging_steps=20,
             evaluation_strategy="steps",
             eval_steps=200,
             save_strategy="steps",
-            save_steps=500,
+            save_steps=200,            # <- every 200 steps
             save_total_limit=3,
-            load_best_model_at_end=False,
-            report_to=[],  # set to ["tensorboard"] if you want TB
-            fp16=(self.device == "cuda"),
+
+            load_best_model_at_end=True,
+            metric_for_best_model="eval_loss",
+            greater_is_better=False,
+
+            bf16=(self.device=="cuda"),
+            fp16=False,
+            tf32=True,
             gradient_checkpointing=True,
-            optim="paged_adamw_8bit" if self.config.use_4bit else "adamw_torch",
+            report_to=[],
+            optim="paged_adamw_8bit" if self.cfg.use_4bit else "adamw_torch",
         )
 
-        tokenized = self.load_training_data()
+        ds = self.load_training_data()
+        collator = DataCollatorForLanguageModeling(tokenizer=self.tok, mlm=False)
+        trainer = Trainer(model=self.model, args=args,
+                          train_dataset=ds["train"], eval_dataset=ds["validation"],
+                          data_collator=collator)
 
-        # We already masked labels; use a simple collator that does NOT add MLM.
-        data_collator = DataCollatorForLanguageModeling(
-            tokenizer=self.tokenizer,
-            mlm=False,
-        )
-
-        trainer = Trainer(
-            model=self.model,
-            args=training_args,
-            train_dataset=tokenized["train"],
-            eval_dataset=tokenized["validation"],
-            data_collator=data_collator,
-        )
-
-        total_steps, tokens_per_step = self._estimate_steps_and_tokens(
-            training_args, len(tokenized["train"])
-        )
-        log_path = self.config.logs_dir / "training_progress.log"
-        trainer.add_callback(ProgressCallback(total_steps, tokens_per_step, log_path))
+        total, tps = self._estimate(args, len(ds["train"]))
+        log_path = self.cfg.logs_dir / "training_progress.log"
+        trainer.add_callback(ProgressCallback(total, tps, log_path))
         print(f"[INFO] Progress log -> {log_path}")
 
-        print("\n[TRAIN] Configuration:")
-        print(f"  Model:                {self.config.base_model}")
-        print(f"  Epochs:               {self.config.num_epochs}")
-        print(f"  Batch size/device:    {self.config.batch_size}")
-        print(f"  Grad accumulation:    {self.config.gradient_accumulation_steps}")
-        print(f"  Effective batch size: {self.config.batch_size * self.config.gradient_accumulation_steps}")
-        print(f"  Learning rate:        {self.config.learning_rate}")
-
         trainer.train()
-
         print("\n[OK] Training complete")
-        print(f"\n[SAVE] Saving model to {self.config.output_dir}")
-        trainer.save_model()
-        self.tokenizer.save_pretrained(self.config.output_dir)
-        print("\n[DONE] Model + tokenizer saved")
+
+        print(f"[SAVE] -> {self.cfg.output_dir}")
+        trainer.save_model(); self.tok.save_pretrained(self.cfg.output_dir)
 
     def run(self):
-        try:
-            self.load_model_and_tokenizer()
-            self.apply_lora()
-            self.train()
-        except Exception as e:
-            print(f"\n[ERROR] Training failed: {e}")
-            import traceback; traceback.print_exc()
-            sys.exit(1)
+        self.load_model_and_tokenizer()
+        self.apply_lora()
+        self.train()
+
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Train ECUdapt LLM")
-    parser.add_argument("--lightweight", action="store_true")
-    parser.add_argument("--model", type=str)
-    parser.add_argument("--epochs", type=int)
-    parser.add_argument("--batch-size", type=int)
-    args = parser.parse_args()
+    p=argparse.ArgumentParser()
+    p.add_argument("--lightweight", action="store_true")
+    p.add_argument("--model", type=str)
+    p.add_argument("--epochs", type=int)
+    p.add_argument("--batch-size", type=int)
+    a=p.parse_args()
 
-    if args.lightweight:
-        print("[CONFIG] Using lightweight configuration")
-        config = LightweightConfig()
-    else:
-        config = LLMConfig()
+    cfg = LightweightConfig() if a.lightweight else LLMConfig()
+    if a.model: cfg.base_model=a.model
+    if a.epochs: cfg.num_epochs=a.epochs
+    if a.batch_size: cfg.batch_size=a.batch_size
 
-    if args.model:  config.base_model = args.model
-    if args.epochs: config.num_epochs = args.epochs
-    if args.batch_size: config.batch_size = args.batch_size
+    ECUTuningTrainer(cfg).run()
 
-    ECUTuningTrainer(config).run()
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
