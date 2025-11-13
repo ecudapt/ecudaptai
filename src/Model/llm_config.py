@@ -6,7 +6,7 @@ from typing import Optional
 @dataclass
 class LLMConfig:
     # ---- Model + training ----
-    base_model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct"
+    base_model_name: str = "meta-llama/Llama-3.1-8B-Instruct"
     tokenizer_name: Optional[str] = None  # defaults to base_model_name
     max_seq_length: int = 2048
 
