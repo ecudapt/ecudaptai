@@ -10,7 +10,8 @@ from pathlib import Path
 from math import ceil
 from time import time
 from tqdm import tqdm
-
+from dataclasses import dataclass
+from typing import Dict, List
 try:
     from transformers import (
         AutoModelForCausalLM, AutoTokenizer,
