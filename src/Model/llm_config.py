@@ -10,7 +10,7 @@ class LLMConfig:
     """
 
     # Stronger base for reasoning
-    base_model: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    base_model: str = "Qwen/Qwen2.5-7B-Instruct"
     model_type: str = "causal"
 
     # Paths
