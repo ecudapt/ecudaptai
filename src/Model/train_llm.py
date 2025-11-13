@@ -3,8 +3,9 @@
 """
 Supervised fine-tuning with DECISION outputs (no quoting) + label masking.
 Saves/evaluates every 200 steps; optimized for A100/L40S (bf16 + TF32).
+Adds HF token support for gated repos (use HF_TOKEN env var).
 """
-import sys, torch
+import os, sys, torch
 from pathlib import Path
 from math import ceil
 from time import time
@@ -24,6 +25,9 @@ except ImportError as e:
 
 from llm_config import LLMConfig, LightweightConfig
 
+# ---- HF gated repo support ----
+HF_TOKEN = os.getenv("HF_TOKEN")
+hf_kwargs = {"token": HF_TOKEN} if HF_TOKEN else {}
 
 # ---------------- progress callback ----------------
 class _TP:
@@ -56,7 +60,6 @@ class ProgressCallback(TrainerCallback):
     def on_train_end(self, args, state, control, **kw):
         self.pbar.n=min(self.total_steps,state.global_step); self.pbar.close(); self._log("[DONE] Training finished")
 
-
 # ---------------- trainer ----------------
 class ECUTuningTrainer:
     def __init__(self, cfg: LLMConfig):
@@ -82,7 +85,12 @@ class ECUTuningTrainer:
             print("[LOAD] 8-bit"); bnb=BitsAndBytesConfig(load_in_8bit=True)
 
         print("[LOAD] Tokenizer…")
-        self.tok = AutoTokenizer.from_pretrained(self.cfg.base_model, trust_remote_code=True, padding_side="right")
+        self.tok = AutoTokenizer.from_pretrained(
+            self.cfg.base_model,
+            trust_remote_code=True,
+            padding_side="right",
+            **hf_kwargs
+        )
         if self.tok.pad_token is None: self.tok.pad_token = self.tok.eos_token
 
         print("[LOAD] Weights…")
@@ -91,7 +99,8 @@ class ECUTuningTrainer:
             quantization_config=bnb,
             device_map="auto",
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16 if self.device=="cuda" else torch.float32
+            torch_dtype=torch.bfloat16 if self.device=="cuda" else torch.float32,
+            **hf_kwargs
         )
         if bnb is not None:
             print("[LOAD] Prepare k-bit training…")
@@ -183,7 +192,7 @@ class ECUTuningTrainer:
             evaluation_strategy="steps",
             eval_steps=200,
             save_strategy="steps",
-            save_steps=200,            # <- every 200 steps
+            save_steps=200,            # every 200 steps
             save_total_limit=3,
 
             load_best_model_at_end=True,
@@ -219,7 +228,6 @@ class ECUTuningTrainer:
         self.load_model_and_tokenizer()
         self.apply_lora()
         self.train()
-
 
 def main():
     import argparse

@@ -1,9 +1,10 @@
 # src/Model/inference.py
 #!/usr/bin/env python3
 """
-Inference engine with self-consistency and anti-quote decoding.
+Inference with self-consistency + anti-quote decoding.
+Adds HF token support for gated repos (use HF_TOKEN env var).
 """
-import sys, torch
+import os, sys, torch
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -15,6 +16,8 @@ except ImportError as e:
 
 from llm_config import LLMConfig
 
+HF_TOKEN = os.getenv("HF_TOKEN")
+hf_kwargs = {"token": HF_TOKEN} if HF_TOKEN else {}
 
 class ECUTuningLLM:
     def __init__(self, model_path: Path, config: Optional[LLMConfig] = None):
@@ -31,12 +34,13 @@ class ECUTuningLLM:
             print(f"❌ Not found: {self.model_path}")
             sys.exit(1)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True, **hf_kwargs)
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_path,
             torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
             device_map="auto",
             trust_remote_code=True,
+            **hf_kwargs
         ).eval()
         print("✅ Model loaded")
 
@@ -77,14 +81,13 @@ class ECUTuningLLM:
                 top_k=self.config.top_k if top_k is None else top_k,
                 do_sample=True,
                 repetition_penalty=max(self.config.repetition_penalty, 1.15),
-                no_repeat_ngram_size=6,                 # reduce verbatim copying
+                no_repeat_ngram_size=6,
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
         full = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
         return self._extract_response(full)
 
-    # Simple consensus: sample N answers, pick the best by structure/length
     def generate_consensus(self, instruction: str, context: str = "", n: int = 3) -> str:
         cands=[]
         for _ in range(n):
@@ -114,8 +117,7 @@ class ECUTuningLLM:
                 a=self.generate_consensus(q, ctx, n=3)
                 print("\r", end="")
                 print(f"🤖 ECUdapt AI:\n{a}\n")
-                hist.append({"q":q,"a":a})
-                hist=hist[-3:]
+                hist.append({"q":q,"a":a}); hist=hist[-3:]
             except KeyboardInterrupt:
                 print("\n👋"); break
             except Exception as e:
