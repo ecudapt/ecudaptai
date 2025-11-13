@@ -25,6 +25,34 @@ except ImportError as e:
 
 from llm_config import LLMConfig, LightweightConfig
 
+
+@dataclass
+class SupervisedDataCollator:
+    pad_token_id: int
+    label_pad_id: int = -100
+
+    def __call__(self, features: List[Dict]) -> Dict[str, torch.Tensor]:
+        # features: list of dicts with "input_ids", "attention_mask", "labels" (variable lengths)
+        batch_input_ids = [f["input_ids"] for f in features]
+        batch_attn      = [f["attention_mask"] for f in features]
+        batch_labels    = [f["labels"] for f in features]
+
+        max_len = max(len(x) for x in batch_input_ids)
+
+        def pad(seq, pad_val, L):
+            return seq + [pad_val] * (L - len(seq))
+
+        input_ids   = [pad(x, self.pad_token_id, max_len) for x in batch_input_ids]
+        attn_mask   = [pad(x, 0, max_len)                   for x in batch_attn]
+        # labels must align with input length; pad with -100 so loss ignores padded part
+        labels      = [pad(x, self.label_pad_id, max_len)   for x in batch_labels]
+
+        return {
+            "input_ids":      torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attn_mask, dtype=torch.long),
+            "labels":       
+        }
+    
 # ---- HF gated repo support ----
 HF_TOKEN = os.getenv("HF_TOKEN")
 hf_kwargs = {"token": HF_TOKEN} if HF_TOKEN else {}
