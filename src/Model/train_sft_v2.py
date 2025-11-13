@@ -46,12 +46,14 @@ def format_example(example):
 
 
 def tokenize_example(example, tokenizer, max_length):
+    # Force everything to the same length so batching works cleanly
     result = tokenizer(
         example["text"],
         truncation=True,
         max_length=max_length,
+        padding="max_length",
     )
-    # causal LM: labels = input_ids
+    # Causal LM: labels = input_ids
     result["labels"] = result["input_ids"].copy()
     return result
 
