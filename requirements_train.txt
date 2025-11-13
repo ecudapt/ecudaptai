@@ -1,0 +1,34 @@
+# =======================================
+# ECUDAPT LLM TRAINING REQUIREMENTS
+# =======================================
+
+# PyTorch (choose 1 of these manually!)
+# ---------------------------------------
+# CUDA 11.8:
+# torch==2.1.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+# CUDA 12.1:
+# torch==2.2.0+cu121 --index-url https://download.pytorch.org/whl/cu121
+# CPU only:
+# torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+
+# Core Training Stack
+transformers>=4.38.0
+datasets>=2.18.0
+accelerate>=0.27.0
+peft>=0.8.2
+bitsandbytes>=0.43.0       # ONLY works on Linux + NVIDIA GPUs
+
+# Data / Tokenization
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+
+# Metrics
+rouge-score>=0.1.2
+sacrebleu>=2.4.0
+
+# Optional
+wandb>=0.16.0
+tensorboard>=2.16.0
+einops>=0.7.0
+safetensors>=0.4.2
+scikit-learn>=1.3.0

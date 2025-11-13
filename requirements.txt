@@ -1,0 +1,43 @@
+# =======================================
+# ECUDAPT: SCRAPER + RAG + INFERENCE
+# =======================================
+
+# --- Core Scraping ---
+scrapy>=2.11.0
+scrapy-playwright>=0.0.34
+playwright>=1.40.0
+pyppeteer==1.0.2
+pyppeteer-stealth==2.7.4
+aiofiles>=24.1.0
+user-agents>=2.2.0
+
+# --- HTML Parsing ---
+requests>=2.32.3
+beautifulsoup4>=4.12.3
+lxml>=5.0.0
+
+# --- Utilities ---
+tqdm>=4.66.5
+colorama>=0.4.6
+python-dotenv>=1.0.0
+
+# --- Database / Supabase ---
+supabase>=2.3.0
+
+# =======================================
+# RAG + Inference (no GPU training needed)
+# =======================================
+
+# Vector DB + Embeddings
+faiss-cpu>=1.7.4          # OK on Windows (prebuilt wheel)
+sentence-transformers>=2.3.0
+
+# Tokenization / LLM loading
+transformers>=4.38.0      # Better chat template support
+accelerate>=0.27.0        # Needed even for inference
+safetensors>=0.4.2
+einops>=0.7.0
+
+# --- Optional Logging ---
+tensorboard>=2.16.0
+wandb>=0.16.0
