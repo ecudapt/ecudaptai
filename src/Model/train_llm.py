@@ -50,7 +50,7 @@ class SupervisedDataCollator:
         return {
             "input_ids":      torch.tensor(input_ids, dtype=torch.long),
             "attention_mask": torch.tensor(attn_mask, dtype=torch.long),
-            "labels":       
+            "labels":       torch.tensor(labels, dtype=torch.long),
         }
     
 # ---- HF gated repo support ----
