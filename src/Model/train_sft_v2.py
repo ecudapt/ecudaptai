@@ -122,19 +122,19 @@ def main():
     model.print_trainable_parameters()
 
     # ---- Training ----
-        training_args = TrainingArguments(
-        output_dir=str(cfg.output_dir),
-        per_device_train_batch_size=cfg.train_batch_size,
-        per_device_eval_batch_size=cfg.train_batch_size,
-        gradient_accumulation_steps=cfg.gradient_accumulation_steps,
-        num_train_epochs=cfg.num_train_epochs,
-        learning_rate=cfg.learning_rate,
-        warmup_ratio=cfg.warmup_ratio,
-        weight_decay=cfg.weight_decay,
-        logging_steps=20,
-        fp16=True,
-        optim="paged_adamw_8bit" if cfg.use_qlora else "adamw_torch",
-        report_to="none",
+    training_args = TrainingArguments(
+    output_dir=str(cfg.output_dir),
+    per_device_train_batch_size=cfg.train_batch_size,
+    per_device_eval_batch_size=cfg.train_batch_size,
+    gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+    num_train_epochs=cfg.num_train_epochs,
+    learning_rate=cfg.learning_rate,
+    warmup_ratio=cfg.warmup_ratio,
+    weight_decay=cfg.weight_decay,
+    logging_steps=20,
+    fp16=True,
+    optim="paged_adamw_8bit" if cfg.use_qlora else "adamw_torch",
+    report_to="none",
     )
 
 
