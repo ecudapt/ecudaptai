@@ -12,10 +12,11 @@ from time import time
 from tqdm import tqdm
 from dataclasses import dataclass
 from typing import Dict, List
+
 try:
     from transformers import (
         AutoModelForCausalLM, AutoTokenizer,
-        TrainingArguments, Trainer, DataCollatorForLanguageModeling,
+        TrainingArguments, Trainer,
         BitsAndBytesConfig, TrainerCallback, TrainerState, TrainerControl
     )
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -27,6 +28,12 @@ except ImportError as e:
 from llm_config import LLMConfig, LightweightConfig
 
 
+# ---- HF gated repo support ----
+HF_TOKEN = os.getenv("HF_TOKEN")
+hf_kwargs = {"token": HF_TOKEN} if HF_TOKEN else {}
+
+
+# ---------------- custom collator (pads inputs & labels) ----------------
 @dataclass
 class SupervisedDataCollator:
     pad_token_id: int
@@ -37,15 +44,17 @@ class SupervisedDataCollator:
         attn      = [f["attention_mask"] for f in features]
         labels    = [f["labels"] for f in features]
 
-        # sanity: make sure we have flat int lists, not nested lists
-        def _is_flat(xs): return all(isinstance(z, int) for z in xs)
+        # flatten if someone ended up with nested lists
+        def _flatten(xs):
+            if xs and isinstance(xs[0], list):
+                out = []
+                for el in xs:
+                    out.extend(el if isinstance(el, list) else [el])
+                return out
+            return xs
 
-        for ix, (ids, lbls) in enumerate(zip(input_ids, labels)):
-            if not _is_flat(ids):
-                # flatten once if accidentally nested [[...]]
-                input_ids[ix] = [t for sub in ids for t in (sub if isinstance(sub, list) else [sub])]
-            if not _is_flat(lbls):
-                labels[ix] = [t for sub in lbls for t in (sub if isinstance(sub, list) else [sub])]
+        input_ids = [_flatten(x) for x in input_ids]
+        labels    = [_flatten(x) for x in labels]
 
         max_len = max(len(x) for x in input_ids)
 
@@ -61,10 +70,7 @@ class SupervisedDataCollator:
             "attention_mask": torch.tensor(attn,      dtype=torch.long),
             "labels":         torch.tensor(labels,    dtype=torch.long),
         }
-    
-# ---- HF gated repo support ----
-HF_TOKEN = os.getenv("HF_TOKEN")
-hf_kwargs = {"token": HF_TOKEN} if HF_TOKEN else {}
+
 
 # ---------------- progress callback ----------------
 class _TP:
@@ -75,10 +81,13 @@ class ProgressCallback(TrainerCallback):
         self.total_steps=total_steps; self.tps=tokens_per_step
         self.tp=_TP(); self.pbar=None
         self.log_path=log_path; log_path.parent.mkdir(parents=True, exist_ok=True)
+
     def _log(self,line): open(self.log_path,"a",encoding="utf-8").write(line.rstrip()+"\n")
+
     def on_train_begin(self, args, state, control, **kw):
         self.pbar=tqdm(total=self.total_steps,desc="TRAIN",leave=True,ncols=100)
         self.tp.t=time(); self._log("[START] Training")
+
     def on_log(self, args, state, control, **kw):
         if not state.log_history: return
         rec=state.log_history[-1]; step=state.global_step; now=time()
@@ -93,9 +102,12 @@ class ProgressCallback(TrainerCallback):
         if lr   is not None: status+=f"  lr={lr:.2e}"
         status+=f"  tok/s={self.tp.r:,.0f}  ETA={m:02d}:{s:02d}"
         self.pbar.set_postfix_str(status[:60]); self.pbar.refresh(); self._log(f"[LOG] {status}")
+
     def on_save(self, args, state, control, **kw): self._log(f"[SAVE] checkpoint {state.global_step}")
+
     def on_train_end(self, args, state, control, **kw):
         self.pbar.n=min(self.total_steps,state.global_step); self.pbar.close(); self._log("[DONE] Training finished")
+
 
 # ---------------- trainer ----------------
 class ECUTuningTrainer:
@@ -106,20 +118,27 @@ class ECUTuningTrainer:
         if self.device=="cuda":
             print(f"[INFO] GPU: {torch.cuda.get_device_name(0)}")
             print(f"[INFO] Mem: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
+            # enable TF32 on Ampere+
+            try:
+                torch.backends.cuda.matmul.allow_tf32 = True
+            except Exception:
+                pass
         self.tok=None; self.model=None
 
     def load_model_and_tokenizer(self):
         print(f"\n[LOAD] Base: {self.cfg.base_model}")
         bnb=None
-        if self.cfg.use_4bit:
+        if self.cfg.use_4bit and self.device=="cuda":
             print("[LOAD] QLoRA 4-bit")
             bnb=BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_quant_type="nf4",
                 bnb_4bit_compute_dtype=torch.bfloat16 if self.device=="cuda" else torch.float32,
                 bnb_4bit_use_double_quant=True
             )
-        elif self.cfg.use_8bit:
+        elif self.cfg.use_8bit and self.device=="cuda":
             print("[LOAD] 8-bit"); bnb=BitsAndBytesConfig(load_in_8bit=True)
+        elif (self.cfg.use_4bit or self.cfg.use_8bit) and self.device!="cuda":
+            print("[WARN] No CUDA; disabling 4/8-bit quantization.")
 
         print("[LOAD] Tokenizer…")
         self.tok = AutoTokenizer.from_pretrained(
@@ -136,7 +155,7 @@ class ECUTuningTrainer:
             quantization_config=bnb,
             device_map="auto",
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16 if self.device=="cuda" else torch.float32,
+            torch_dtype=(torch.bfloat16 if (self.device=="cuda" and torch.cuda.is_bf16_supported()) else torch.float16),
             **hf_kwargs
         )
         if bnb is not None:
@@ -168,37 +187,57 @@ class ECUTuningTrainer:
 
 ### Response:
 """
-        resp = ex.get("response","").strip()
+        resp = (ex.get("response") or "").strip()
         decision = ex.get("decision") or "Apply conservative bounded deltas based on logs."
         why      = ex.get("why") or "Observed behavior suggests conservative adjustment."
         safety   = ex.get("safety") or "Respect octane timing caps, lambda floors at high load, and WGDC limits."
-        target = f"Decision: {decision}\nWhy: {why}\nSafety: {safety}\n"
+        target = f"Decision: {decision}\nWhy: {why}\nSafety: {safety}"
         if resp:
-            target += f"\nSummary: {resp[:600]}\n"
-        target += (self.tok.eos_token or "</s>")
+            target += f"\n\nSummary: {resp[:600]}"
+        # append EOS (safe even if tokenizer changes)
+        eos = self.tok.eos_token if self.tok and self.tok.eos_token else "</s>"
+        target += f"\n{eos}"
         return {"prompt": prompt, "target": target}
 
     def _tokenize_mask_supervised(self, batch):
         prompts=batch["prompt"]; targets=batch["target"]
-        p_tok = self.tok(prompts, truncation=True, max_length=self.cfg.max_seq_length, padding=False, add_special_tokens=True)
-        with self.tok.as_target_tokenizer():
-            t_tok = self.tok(targets, truncation=True, max_length=self.cfg.max_seq_length, padding=False, add_special_tokens=False)
+        # variable-length, no padding here
+        p_tok = self.tok(
+            prompts, truncation=True, max_length=self.cfg.max_seq_length,
+            padding=False, add_special_tokens=True
+        )
+        t_tok = self.tok(
+            targets, truncation=True, max_length=self.cfg.max_seq_length,
+            padding=False, add_special_tokens=False
+        )
         input_ids=[]; attn=[]; labels=[]
-        for pi, ti in zip(p_tok["input_ids"], t_tok["input_ids"]):
-            ids = pi + ti
-            am  = [1] * len(ids)
-            lb  = [-100]*len(pi) + ti      # mask prompt tokens => no loss on prompt
-            input_ids.append(ids[:self.cfg.max_seq_length])
-            attn.append(am[:self.cfg.max_seq_length])
-            labels.append(lb[:self.cfg.max_seq_length])
+        for pi, pm, ti in zip(p_tok["input_ids"], p_tok["attention_mask"], t_tok["input_ids"]):
+            ids = pi + ti + [self.tok.eos_token_id]
+            am  = pm + [1]* (len(ti)+1)
+            lb  = [-100]*len(pi) + ti + [self.tok.eos_token_id]  # mask prompt
+
+            # left-truncate if too long (keep target tail)
+            if len(ids) > self.cfg.max_seq_length:
+                cut = len(ids) - self.cfg.max_seq_length
+                ids = ids[cut:]; am = am[cut:]; lb = lb[cut:]
+
+            input_ids.append(ids)
+            attn.append(am)
+            labels.append(lb)
+
         return {"input_ids":input_ids,"attention_mask":attn,"labels":labels}
 
     def load_training_data(self):
         if not self.cfg.train_data_path.exists():
             print(f"[ERROR] Missing train file: {self.cfg.train_data_path}"); sys.exit(1)
-        ds = load_dataset("json", data_files={"train":str(self.cfg.train_data_path),
-                                              "validation":str(self.cfg.val_data_path)})
+        if not self.cfg.val_data_path.exists():
+            print(f"[ERROR] Missing val file: {self.cfg.val_data_path}"); sys.exit(1)
+
+        ds = load_dataset("json",
+                          data_files={"train":str(self.cfg.train_data_path),
+                                      "validation":str(self.cfg.val_data_path)})
         print(f"[DATA] Train={len(ds['train'])}  Val={len(ds['validation'])}")
+
         ds = ds.map(self._format_example)
         ds = ds.map(self._tokenize_mask_supervised, batched=True, remove_columns=ds["train"].column_names)
         return ds
@@ -226,7 +265,9 @@ class ECUTuningTrainer:
 
             logging_dir=str(self.cfg.logs_dir),
             logging_steps=20,
-            evaluation_strategy="steps",
+
+            # use the new param name
+            eval_strategy="steps",
             eval_steps=200,
             save_strategy="steps",
             save_steps=200,            # every 200 steps
@@ -236,24 +277,38 @@ class ECUTuningTrainer:
             metric_for_best_model="eval_loss",
             greater_is_better=False,
 
-            bf16=(self.device=="cuda"),
-            fp16=False,
-            tf32=True,
+            bf16=(self.device=="cuda" and torch.cuda.is_bf16_supported()),
+            fp16=(self.device=="cuda" and not torch.cuda.is_bf16_supported()),
+            tf32=True if self.device=="cuda" else False,
             gradient_checkpointing=True,
             report_to=[],
-            optim="paged_adamw_8bit" if self.cfg.use_4bit else "adamw_torch",
+            optim="paged_adamw_8bit" if (self.cfg.use_4bit and self.device=="cuda") else "adamw_torch",
         )
 
         ds = self.load_training_data()
-        collator = DataCollatorForLanguageModeling(tokenizer=self.tok, mlm=False)
-        trainer = Trainer(model=self.model, args=args,
-                          train_dataset=ds["train"], eval_dataset=ds["validation"],
-                          data_collator=collator)
+        collator = SupervisedDataCollator(pad_token_id=self.tok.pad_token_id, label_pad_id=-100)
+
+        trainer = Trainer(
+            model=self.model,
+            args=args,
+            train_dataset=ds["train"],
+            eval_dataset=ds["validation"],
+            data_collator=collator,
+            tokenizer=None,  # avoid HF auto-padding; we control padding in collator
+        )
 
         total, tps = self._estimate(args, len(ds["train"]))
         log_path = self.cfg.logs_dir / "training_progress.log"
         trainer.add_callback(ProgressCallback(total, tps, log_path))
         print(f"[INFO] Progress log -> {log_path}")
+
+        print("\n[TRAIN] Config:")
+        print(f"  Model:                {self.cfg.base_model}")
+        print(f"  Epochs:               {self.cfg.num_epochs}")
+        print(f"  Batch size/device:    {self.cfg.batch_size}")
+        print(f"  Grad accumulation:    {self.cfg.gradient_accumulation_steps}")
+        print(f"  Effective batch size: {self.cfg.batch_size * self.cfg.gradient_accumulation_steps}")
+        print(f"  Learning rate:        {self.cfg.learning_rate}\n")
 
         trainer.train()
         print("\n[OK] Training complete")
@@ -265,6 +320,7 @@ class ECUTuningTrainer:
         self.load_model_and_tokenizer()
         self.apply_lora()
         self.train()
+
 
 def main():
     import argparse
