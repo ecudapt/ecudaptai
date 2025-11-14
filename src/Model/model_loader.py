@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Tuple
-
+from typing import Tuple, List, Dict
 import torch
 from transformers import (
     AutoTokenizer,
@@ -80,20 +79,38 @@ def load_sft_model() -> Tuple[AutoTokenizer, torch.nn.Module]:
 
 def generate_completion(
     prompt: str,
-    max_new_tokens: int = 512,
-    temperature: float = 0.7,
+    max_new_tokens: int = 350,
+    temperature: float = 0.3,
     top_p: float = 0.9,
 ) -> str:
     """
-    Convenience helper: run a single prompt through the SFT model.
-    Used by the Agent.
+    Wraps the prompt in Llama-3.1's chat template so the model
+    behaves like a helpful assistant instead of a raw text completer.
     """
     cfg = LLMConfig()
     tokenizer, model = load_sft_model()
     device = next(model.parameters()).device
 
+    messages: List[Dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                "You are ECUDapt AI, a conservative, data-driven ECU tuning "
+                "expert. You explain ECU concepts clearly, avoid guessing "
+                "numeric map values, and always prioritize engine safety."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+    chat_text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
     inputs = tokenizer(
-        prompt,
+        chat_text,
         return_tensors="pt",
         truncation=True,
         max_length=cfg.max_seq_length,
@@ -109,5 +126,11 @@ def generate_completion(
             pad_token_id=tokenizer.eos_token_id,
         )
 
-    text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-    return text
+    full_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+
+    # Strip the prompt part off if it gets echoed
+    # (simple heuristic: return only the part after the original user prompt)
+    if prompt in full_text:
+        return full_text.split(prompt, 1)[-1].strip()
+
+    return full_text.strip()
