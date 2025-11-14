@@ -24,7 +24,7 @@ class LLMConfig:
 
     # ---- Paths ----
     # "project_root" here is actually the Model folder:
-    # C:/Users/jonat/Desktop/ecudapt/ecudapt-ai/src/Model
+    # .../ecudapt-ai/src/Model
     project_root: Path = field(
         default_factory=lambda: Path(__file__).resolve().parent
     )
@@ -32,20 +32,32 @@ class LLMConfig:
     data_dir: Path = field(init=False)
     raw_forum_file: Path = field(init=False)
     tagged_forum_file: Path = field(init=False)
+
+    # New: which file RAG should read from (usually the tagged forum file)
+    rag_source_file: Path = field(init=False)
+
     sft_train_file: Path = field(init=False)
     sft_eval_file: Path = field(init=False)
     rag_index_dir: Path = field(init=False)
     memory_file: Path = field(init=False)
     output_dir: Path = field(init=False)
 
+    # New: where the final SFT model lives (used at inference time)
+    sft_model_dir: Path = field(init=False)
+
     def __post_init__(self):
         # data directory under Model:
         # src/Model/data/...
         self.data_dir = self.project_root / "data"
 
+        clean_dir = self.data_dir / "clean"
+
         # cleaned forum data
-        self.raw_forum_file = self.data_dir / "clean" / "forum_posts_clean.jsonl"
-        self.tagged_forum_file = self.data_dir / "clean" / "forum_posts_tagged.jsonl"
+        self.raw_forum_file = clean_dir / "forum_posts_clean.jsonl"
+        self.tagged_forum_file = clean_dir / "forum_posts_tagged.jsonl"
+
+        # RAG should usually use the richer tagged file
+        self.rag_source_file = self.tagged_forum_file
 
         # SFT data
         self.sft_train_file = self.data_dir / "train.jsonl"
@@ -56,10 +68,14 @@ class LLMConfig:
         self.memory_file = self.data_dir / "memory.json"
 
         # fine-tuned model output
-        # keep checkpoints at repo root level if you want, or inside Model
+        # Trainer will write checkpoints here.
         self.output_dir = self.project_root / "checkpoints"
 
+        # For now, assume we load the model directly from output_dir
+        # (later you can point this at a specific subfolder like checkpoints/final)
+        self.sft_model_dir = self.output_dir
+
         # ---- Create directories ----
-        (self.data_dir / "clean").mkdir(parents=True, exist_ok=True)
+        clean_dir.mkdir(parents=True, exist_ok=True)
         self.rag_index_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
