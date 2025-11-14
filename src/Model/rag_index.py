@@ -11,7 +11,7 @@ from sentence_transformers import SentenceTransformer
 
 from llm_config import LLMConfig
 
-# Try to import faiss; fall back to pure NumPy if unavailable (e.g. Python 3.12)
+# Try to import faiss; fall back to pure NumPy if unavailable
 try:
     import faiss  # type: ignore
 except ImportError:  # pragma: no cover
@@ -32,33 +32,21 @@ class RagIndex:
 
         self.use_faiss: bool = faiss is not None
 
-        self.index: Optional[Any] = None           # faiss index if available
-        self.embeddings: Optional[np.ndarray] = None  # fallback embeddings
+        self.index: Optional[Any] = None              # faiss index (if used)
+        self.embeddings: Optional[np.ndarray] = None  # NumPy fallback
         self.docs: List[Dict] = []
 
     # ---------- Internal helpers ----------
 
-    def _read_source_docs(self) -> List[Dict]:
-        """
-        Read from tagged forum file if available, else fall back to clean forum file.
-        """
-        tagged = self.cfg.tagged_forum_file
-        clean = self.cfg.raw_forum_file
+    def _load_docs_from_file(self, path: Path, label: str) -> List[Dict]:
+        if not path.exists():
+            print(f"[RAG] {label} file does not exist: {path}")
+            return []
 
-        if tagged.exists():
-            src = tagged
-            print(f"[RAG] Reading tagged docs from {src}")
-        elif clean.exists():
-            src = clean
-            print(f"[RAG] Tagged file missing. Using CLEAN file: {src}")
-        else:
-            raise FileNotFoundError(
-                f"No RAG source file found. Neither {tagged} nor {clean} exists."
-            )
-
+        print(f"[RAG] Reading {label} docs from {path}")
         docs: List[Dict] = []
-        with src.open("r", encoding="utf-8") as f:
-            for i, line in enumerate(f):
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
                 try:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
@@ -78,8 +66,31 @@ class RagIndex:
                     }
                 )
 
-        print(f"[RAG] Loaded {len(docs)} docs from source.")
+        print(f"[RAG] Loaded {len(docs)} docs from {label}.")
         return docs
+
+    def _read_source_docs(self) -> List[Dict]:
+        """
+        Try multiple sources in priority order:
+        1) tagged forum file
+        2) clean forum file
+        3) SFT train file (as a last resort)
+        """
+        candidates = [
+            ("TAGGED", self.cfg.tagged_forum_file),
+            ("CLEAN", self.cfg.raw_forum_file),
+            ("TRAIN", self.cfg.sft_train_file),
+        ]
+
+        for label, path in candidates:
+            docs = self._load_docs_from_file(path, label)
+            if docs:
+                print(f"[RAG] Using {label} as RAG source.")
+                return docs
+
+        raise FileNotFoundError(
+            "No non-empty RAG source file found. Tried tagged, clean, and train."
+        )
 
     # ---------- Building ----------
 
@@ -87,6 +98,10 @@ class RagIndex:
         docs = self._read_source_docs()
         if max_docs is not None:
             docs = docs[:max_docs]
+
+        if not docs:
+            print("[RAG] No docs found to index. Aborting RAG build.")
+            return
 
         self.docs = docs
         texts = [d["content"] for d in docs]
@@ -97,9 +112,11 @@ class RagIndex:
         )
         emb = self.embedder.encode(
             texts, convert_to_numpy=True, show_progress_bar=True
-        )
+        ).astype("float32")
 
-        emb = emb.astype("float32")
+        if emb.size == 0:
+            print("[RAG] Encoder returned empty embeddings. Aborting RAG build.")
+            return
 
         # Normalize for cosine similarity
         norms = np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12
@@ -144,7 +161,6 @@ class RagIndex:
             self.embeddings = None
             print(f"[RAG] Loaded FAISS index from {self.index_path}")
         else:
-            # fall back to NumPy embeddings
             if not self.emb_path.exists():
                 raise FileNotFoundError(
                     "Embeddings file not found and FAISS is unavailable. "
@@ -160,8 +176,7 @@ class RagIndex:
         if not self.docs:
             self.load()
 
-        q_emb = self.embedder.encode([query], convert_to_numpy=True).astype("float32")
-        q_emb = q_emb[0]
+        q_emb = self.embedder.encode([query], convert_to_numpy=True).astype("float32")[0]
         q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-12)
 
         if self.use_faiss and self.index is not None:
