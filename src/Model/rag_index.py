@@ -198,7 +198,68 @@ class RagIndex:
             results.append(doc)
 
         return results
+def _extract_content(self, obj: Dict) -> Optional[str]:
+        """
+        Accepts multiple possible field names and attempts to extract text content.
+        """
+        POSSIBLE_FIELDS = [
+            "content",
+            "text",
+            "post",
+            "body",
+            "message",
+            "raw",
+            "cleaned",
+            "normalized",
+            "chunk",
+        ]
 
+        for key in POSSIBLE_FIELDS:
+            if key in obj and isinstance(obj[key], str) and obj[key].strip():
+                return obj[key].strip()
+
+        # Fallback: combine all short string fields
+        string_parts = []
+        for v in obj.values():
+            if isinstance(v, str) and 10 < len(v) < 5000:
+                string_parts.append(v.strip())
+
+        if string_parts:
+            return "\n".join(string_parts)
+
+        return None
+
+
+def _load_docs_from_file(self, path: Path, label: str) -> List[Dict]:
+    if not path.exists():
+        print(f"[RAG] {label} file does not exist: {path}")
+        return []
+
+    print(f"[RAG] Reading {label} docs from {path}")
+    docs: List[Dict] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            content = self._extract_content(obj)
+            if not content:
+                continue
+
+            docs.append(
+                {
+                    "content": content,
+                    "thread_title": obj.get("thread_title") or obj.get("title"),
+                    "url": obj.get("url"),
+                    "domain": obj.get("domain"),
+                    "tags": obj.get("tags"),
+                }
+            )
+
+    print(f"[RAG] Loaded {len(docs)} docs from {label}.")
+    return docs
 
 def build_index_cli():
     cfg = LLMConfig()
